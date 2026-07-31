@@ -1,0 +1,9 @@
+{
+  "server_url": "https://stickies.basisadresse.de",
+  "username": "admin",
+  "password": "changeme",
+  "workshop_codes": ["WS-ABCD-1234"],
+  "printer_name": "C17",
+  "poll_interval_seconds": 3,
+  "blackening": 3
+}

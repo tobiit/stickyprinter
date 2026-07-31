@@ -1,0 +1,7 @@
+# StickyPrinter print-agent's own dependency, on top of TiMiniPrint's.
+requests>=2.31
+
+# TiMiniPrint's dependencies (bleak, Pillow, pypdfium2, crc8, pyserial,
+# winsdk on Windows, ...). Populated by setup.ps1, which clones the library
+# into ./vendor/TiMini-Print before this file is used.
+-r vendor/TiMini-Print/requirements.txt

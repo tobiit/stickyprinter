@@ -1,0 +1,7 @@
+# Local, machine-specific — not part of the source
+venv/
+vendor/
+config.json
+agent-state.json
+__pycache__/
+*.pyc

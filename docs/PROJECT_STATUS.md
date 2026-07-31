@@ -76,14 +76,62 @@ it) — untracked via `git rm --cached` and added to `.gitignore`
 (`/data/*.db*`). If you're setting up a fresh clone, the DB is created
 automatically on first run (`src/db.js`).
 
+## Local print agent (deploy/print-agent/), 2026-07-31
+
+Realized the backend (esp. once deployed remotely per `deploy/install.sh`)
+structurally cannot print: the VPS has no Bluetooth connection to a printer
+sitting in the workshop room. `printer.js`'s CLI-shelling fallback can only
+ever work if the Node process itself runs on a machine paired with the
+printer — never true for the production VPS deployment.
+
+Fix, until the Android app exists: `deploy/print-agent/` is a standalone
+**Python** agent (Windows-first, but platform-agnostic in principle) that
+runs on the moderator's own PC — which *is* Bluetooth-paired with the C17.
+It polls `GET /api/stickies/workshop/:code?status=printed` (existing
+endpoint — the backend already marks stickies "printed" immediately on
+manual print or autoprint, before/regardless of whether server-side
+printing actually works), tracks which sticky IDs it has already
+physically printed in a local `agent-state.json`, fetches
+`GET /api/stickies/:id/print-render` for new ones, and prints via
+TiMiniPrint's documented **library** API (`PrinterCatalog`,
+`BluetoothDiscovery`, `connect_printer`, `printer.print_file(...)`) —
+imported directly, not shelled out to a CLI. **Zero backend changes were
+needed** — every endpoint it uses already existed.
+
+TiMiniPrint isn't on PyPI, so `setup.ps1` clones
+github.com/Dejniel/TiMini-Print (Apache-2.0) into `vendor/TiMini-Print` at
+setup time rather than vendoring a copy into this repo. BLE goes through
+`bleak`, which has a native Windows (WinRT) backend — confirmed via
+`requirements.txt` (`winsdk` dependency on `sys_platform == "win32"`) — so
+this works from a real Windows Python process. **Important: it will not
+work from inside WSL** — WSL2 has no Bluetooth passthrough to
+Windows-paired devices. The agent must run as native Windows Python, not
+inside a WSL shell (even though development/testing of everything else in
+this repo happens in WSL).
+
+Tested in this session (see chat history around 2026-07-31): the full
+import chain (`PrinterCatalog.load()`, `BluetoothDiscovery`), the REST
+client (login, poll, print-render fetch) against a real running
+StickyPrinter instance, state-tracking idempotency, and the error paths
+(bad password, unreachable server, missing config) — all verified working.
+**Not tested: an actual BLE print to a real C17** — no hardware available
+in the dev sandbox. That still needs a real run on-site.
+
+Known v1 limitations (documented in `deploy/print-agent/README.md`):
+single-agent-per-printer assumed (no lock/coordination), a failed physical
+print isn't reflected back to the web UI (sticky still shows "printed"),
+credentials stored in plain-text `config.json`.
+
 ## Known gaps / deliberately deferred
 
-- **No real BLE printing from the Node backend.** `printer.js` only shells
-  out to a `timiniprint` CLI binary if one happens to be on `PATH`
-  (unlikely — see android-app.md, the real project is a Python library, not
-  a CLI you'd install on a print server) or logs a stub. Real printing is
-  intentionally being pushed to the Android app (native BLE), not solved
-  server-side — see decision below.
+- **No real BLE printing from the Node backend itself** — and this is now
+  known to be structural, not just unimplemented (see "Local print agent"
+  above): a remote-hosted backend has no path to a printer in the room.
+  `printer.js`'s CLI fallback remains as dead-ish code for the case where
+  someone runs the whole Node server locally on a printer-paired machine
+  (e.g. via `deploy/run-local.sh`); in the normal VPS deployment it will
+  never find a CLI and always falls through to the stub. The print agent
+  (above) and, longer-term, the Android app are the real solutions.
 - **Windows desktop app: dropped.** The original README asked for a
   Windows desktop app for the moderator. Decision (this session): replace
   it with a native Android app instead, both because BLE printer access is
@@ -122,12 +170,19 @@ override `DOMAIN=`.
 
 ## Next steps (pick up here)
 
-1. Android app — see [`docs/android-app.md`](android-app.md) for the full
+1. **Verify the print agent against real hardware** — on-site with the
+   actual C17: run `deploy/print-agent/setup.bat`/`run-agent.bat` on the
+   moderator's Windows PC and confirm an actual physical print. This is
+   the biggest untested piece of what exists so far.
+2. Android app — see [`docs/android-app.md`](android-app.md) for the full
    technical plan (protocol details, BLE specifics, effort estimate). Not
    started yet; it's a separate project/repo, not part of this Node
    codebase.
-2. Rate limiting on auth endpoints.
-3. CI (run `npm test` on push).
-4. Decide whether `printer.js`'s CLI fallback is worth keeping at all once
-   the Android app exists, or whether the web "Print" button should simply
-   be removed/repurposed in favor of "printed via the Android app".
+3. Rate limiting on auth endpoints.
+4. CI (run `npm test` on push).
+5. Decide whether `printer.js`'s CLI fallback is worth keeping at all now
+   that the print agent exists, or whether it should just be removed to
+   avoid two different "how printing happens" code paths.
+6. Print-agent v2 ideas (not needed yet): a real moderator API token
+   instead of plain-text password in `config.json`; report physical print
+   failures back to the web UI instead of only logging them locally.
