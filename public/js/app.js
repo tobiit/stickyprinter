@@ -788,6 +788,13 @@ async function renderModeratorSticky(stickyId) {
   try { sticky = await api('GET', `/stickies/${stickyId}`); }
   catch (err) { return renderError('Could not load sticky: ' + err.message); }
 
+  async function markPrinted() {
+    await api('POST', `/stickies/${stickyId}/print`);
+    const code = getWorkshopCode(sticky);
+    if (code) navigate('#moderator/workshop/' + code);
+    else history.back();
+  }
+
   async function printSticky() {
     try {
       await api('POST', `/stickies/${stickyId}/print`);
@@ -797,6 +804,29 @@ async function renderModeratorSticky(stickyId) {
       else history.back();
     } catch (err) {
       showToast('Print failed', err.message, 'warning');
+    }
+  }
+
+  // Prints directly from this browser tab over Bluetooth (no local agent
+  // needed) — requires Chrome/Edge and a user gesture to pick the printer.
+  async function printViaBluetooth() {
+    if (!isWebBluetoothSupported()) {
+      showToast('Not supported', 'Bluetooth printing needs Chrome or Edge.', 'warning');
+      return;
+    }
+    let printer;
+    try {
+      showToast('Select the printer…', 'Choose it from the browser dialog.', '');
+      printer = await connectBlePrinter();
+      const png = await (await fetch(`/api/stickies/${stickyId}/print-render`)).blob();
+      showToast('Printing…', 'Sending to the printer over Bluetooth.', '');
+      await printer.printPng(png);
+      await markPrinted();
+      showToast('Printed!', '', 'success');
+    } catch (err) {
+      showToast('Bluetooth print failed', err.message, 'warning');
+    } finally {
+      if (printer) printer.disconnect();
     }
   }
 
@@ -837,8 +867,11 @@ async function renderModeratorSticky(stickyId) {
         }),
       ),
       el('div', { style: { display: 'flex', gap: '12px', marginTop: '24px', flexWrap: 'wrap' } },
+        sticky.status === 'submitted' && isWebBluetoothSupported()
+          ? el('button', { className: 'btn btn-green btn-lg', onclick: printViaBluetooth }, '🔵 Print via Bluetooth')
+          : null,
         sticky.status === 'submitted'
-          ? el('button', { className: 'btn btn-green btn-lg', onclick: printSticky }, '🖨️ Print')
+          ? el('button', { className: isWebBluetoothSupported() ? 'btn btn-ghost btn-lg' : 'btn btn-green btn-lg', onclick: printSticky }, '🖨️ Print (agent/local)')
           : null,
         el('button', { className: 'btn btn-ghost btn-lg', onclick: postpone }, '⏭️ Postpone'),
         sticky.status === 'submitted'

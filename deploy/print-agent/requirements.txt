@@ -1,7 +1,18 @@
 # StickyPrinter print-agent's own dependency, on top of TiMiniPrint's.
 requests>=2.31
 
-# TiMiniPrint's dependencies (bleak, Pillow, pypdfium2, crc8, pyserial,
-# winsdk on Windows, ...). Populated by setup.ps1, which clones the library
-# into ./vendor/TiMini-Print before this file is used.
+# Cap bleak below its 1.0 break. TiMiniPrint's own requirements.txt only
+# pins "bleak>=0.22" (no upper bound), so a fresh install pulls whatever is
+# newest — currently 3.0.x, three major versions past what TiMiniPrint
+# actually appears to be tested against. That combination has been observed
+# to fail Windows/WinRT scanning with "TypeError: unhashable type: 'list'"
+# deep inside bleak's own BleakScanner.discover(), not in TiMiniPrint's
+# code. Pinning here (combined with their >=0.22) resolves to the newest
+# 0.x release instead. Remove this pin if a future TiMiniPrint release
+# raises its own floor past 1.0 with a version it actually supports.
+bleak<1.0.0
+
+# TiMiniPrint's dependencies (Pillow, pypdfium2, crc8, pyserial, winsdk on
+# Windows, ...). Populated by setup.ps1, which clones the library into
+# ./vendor/TiMini-Print before this file is used.
 -r vendor/TiMini-Print/requirements.txt

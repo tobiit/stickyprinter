@@ -3,8 +3,15 @@
 Bridges the gap between the web-hosted StickyPrinter backend and the C17
 printer in the room. The backend (e.g. running on a VPS behind
 `stickies.basisadresse.de`) has no physical/Bluetooth connection to the
-printer — this agent runs on the moderator's own Windows PC, which *is*
-Bluetooth-paired with the C17, and does the actual printing.
+printer — this agent runs on the moderator's own Windows PC, which *is* in
+Bluetooth range of the C17, and does the actual printing.
+
+**No Windows-level pairing needed.** The C17 (like most of these cheap BLE
+"cat printers") doesn't implement classic Bluetooth bonding — it just
+advertises and accepts a direct GATT connection, exactly like a web page
+using the Web Bluetooth API does. Trying to pair it via Windows'
+Settings → Bluetooth & devices may not even complete, and isn't required:
+the agent finds and connects to it via a live Bluetooth scan.
 
 **How it works:** the agent polls the StickyPrinter API for stickies the
 backend has already marked "printed" (via the moderator's Print button or
@@ -18,8 +25,9 @@ Requires no changes on the server side — it only uses existing endpoints
 
 ## Prerequisites
 
-- Windows 10/11 with the C17 printer already paired in **Settings →
-  Bluetooth & devices**.
+- Windows 10/11 with Bluetooth turned on and the C17 printer powered on
+  and in range. **Do not pair it via Settings → Bluetooth & devices** —
+  see above, it isn't needed and may not work anyway.
 - [Python 3.11+](https://www.python.org/downloads/windows/) — during
   install, check **"Add python.exe to PATH"**.
 - [Git for Windows](https://git-scm.com/download/win) — used once by setup
@@ -78,9 +86,20 @@ log on" for your user account.
 
 ## Troubleshooting
 
+- **`Bluetooth scan failed (ble: unhashable type: 'list')`** — this is
+  **not** an admin-rights problem (a permissions issue looks completely
+  different: "Access is denied", a timeout, or the scan just finding
+  nothing). It's a version mismatch: TiMiniPrint's own `requirements.txt`
+  only pins `bleak>=0.22` with no upper bound, so a fresh install pulls
+  whatever is newest — as of writing that's `bleak` 3.0.x, three major
+  versions past 0.22, and that combination fails Windows/WinRT scanning
+  with exactly this error deep inside bleak itself. This repo's
+  `requirements.txt` now pins `bleak<1.0.0` to avoid it. If you already ran
+  `setup.bat` before this fix: delete the `venv` folder here and re-run
+  `setup.bat` for a clean install with the corrected version.
 - **"Printer 'C17' not found"** — make sure the printer is powered on and
-  already paired in Windows' own Bluetooth settings (this agent connects
-  to an already-paired device, it doesn't pair new ones).
+  within range. It does **not** need to be paired in Windows' Bluetooth
+  settings first (see above) — this agent finds it via a live scan.
 - **"Login failed"** — check `username`/`password` in `config.json`.
 - **"Could not reach `<server_url>`"** — check the URL and your internet
   connection; if the server uses a self-signed certificate this will also

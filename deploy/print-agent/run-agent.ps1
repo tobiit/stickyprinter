@@ -8,11 +8,11 @@ Set-Location $ScriptDir
 
 $PythonExe = Join-Path $ScriptDir "venv\Scripts\python.exe"
 if (-not (Test-Path $PythonExe)) {
-    Write-Error "venv not found — run setup.ps1 (or setup.bat) first."
+    Write-Error "venv not found - run setup.ps1 (or setup.bat) first."
     exit 1
 }
 if (-not (Test-Path (Join-Path $ScriptDir "config.json"))) {
-    Write-Error "config.json not found — run setup.ps1 first, then edit config.json."
+    Write-Error "config.json not found - run setup.ps1 first, then edit config.json."
     exit 1
 }
 

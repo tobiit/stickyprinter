@@ -1,7 +1,8 @@
 """
 StickyPrinter local print agent.
 
-Runs on the moderator's PC (Bluetooth-paired with the C17 printer) and
+Runs on the moderator's PC (in Bluetooth range of the C17 printer - no
+Windows-level pairing needed, see README.md) and
 bridges the gap between the web-hosted StickyPrinter backend and the
 physical printer: the backend cannot reach the printer directly (it isn't
 in the room), so this agent polls the backend for stickies that have
@@ -29,7 +30,7 @@ from pathlib import Path
 import requests
 
 # timiniprint (github.com/Dejniel/TiMini-Print, Apache-2.0) isn't published
-# on PyPI — setup.ps1 clones it into ./vendor/TiMini-Print. Add it to
+# on PyPI - setup.ps1 clones it into ./vendor/TiMini-Print. Add it to
 # sys.path so it can be imported without a system-wide install.
 VENDOR_DIR = Path(__file__).parent / "vendor" / "TiMini-Print"
 if VENDOR_DIR.exists():
@@ -152,7 +153,8 @@ class PrinterAgent:
         if device is None:
             raise RuntimeError(
                 f"Printer {self.config.printer_name!r} not found. Make sure it's "
-                "powered on and paired in Windows Bluetooth settings."
+                "powered on and within range. It does not need to be paired in "
+                "Windows Bluetooth settings first - this does a live scan."
             )
         self._device = device
         return device

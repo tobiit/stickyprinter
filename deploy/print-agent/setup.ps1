@@ -51,10 +51,10 @@ Write-Host "==> Installing Python dependencies"
 if (-not (Test-Path "$ScriptDir\config.json")) {
     Copy-Item "$ScriptDir\config.example.json" "$ScriptDir\config.json"
     Write-Host ""
-    Write-Host "==> Created config.json — edit it (server URL, moderator login, workshop code(s)) before running the agent." -ForegroundColor Yellow
+    Write-Host "==> Created config.json - edit it (server URL, moderator login, workshop code(s)) before running the agent." -ForegroundColor Yellow
 } else {
     Write-Host "==> config.json already exists, leaving it untouched"
 }
 
 Write-Host ""
-Write-Host "Setup complete. Pair the C17 printer in Windows Bluetooth settings, edit config.json, then run: .\run-agent.bat" -ForegroundColor Green
+Write-Host "Setup complete. Power on the C17 (no Windows pairing needed), edit config.json, then run: .\run-agent.bat" -ForegroundColor Green
