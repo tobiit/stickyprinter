@@ -16,7 +16,11 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.3",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^13.0.2",
     "express": "^5.2.1",

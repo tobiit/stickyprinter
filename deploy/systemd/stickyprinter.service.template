@@ -1,0 +1,23 @@
+[Unit]
+Description=StickyPrinter
+After=network.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__APP_DIR__/.env
+ExecStart=__NODE_BIN__ src/server.js
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__APP_DIR__/data
+
+[Install]
+WantedBy=multi-user.target

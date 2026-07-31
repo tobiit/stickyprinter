@@ -5,6 +5,7 @@ const router = express.Router();
 const { stickyOps, participantOps, workshopOps } = require('../db');
 const { requireModerator, requireParticipant } = require('../middleware/auth');
 const { printSticky } = require('../printer');
+const { composeStickyPng, isValidImageDataUrl } = require('../printRender');
 const { getSseClients } = require('./stream');
 
 const participantAuth = requireParticipant(participantOps);
@@ -110,6 +111,9 @@ router.put('/:id', participantAuth, (req, res) => {
       return res.status(409).json({ error: 'Cannot edit a sticky that has been submitted' });
     }
     const { content, image_data } = req.body;
+    if (image_data && !isValidImageDataUrl(image_data)) {
+      return res.status(400).json({ error: 'image_data must be a base64 image data URL' });
+    }
     const updated = stickyOps.update(sticky.id, content || '', image_data || null);
     return res.json(updated);
   } catch (err) {
@@ -194,6 +198,29 @@ router.post('/:id/print', requireModerator, async (req, res) => {
   } catch (err) {
     console.error('Print sticky error:', err);
     return res.status(500).json({ error: 'Print error: ' + err.message });
+  }
+});
+
+// GET /api/stickies/:id/print-render - PNG preview of the composed print job (moderator only)
+router.get('/:id/print-render', requireModerator, async (req, res) => {
+  try {
+    const sticky = stickyOps.findById(req.params.id);
+    if (!sticky) {
+      return res.status(404).json({ error: 'Sticky not found' });
+    }
+    const db = require('../db').getDb();
+    const workshopRow = db.prepare('SELECT * FROM workshops WHERE id = ?').get(sticky.workshop_id);
+    if (!workshopRow || workshopRow.moderator_id !== req.session.moderatorId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const participant = participantOps.findById(sticky.participant_id);
+    const png = await composeStickyPng(sticky, participant, workshopRow);
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(png);
+  } catch (err) {
+    console.error('Print render error:', err);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 

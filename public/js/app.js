@@ -6,10 +6,30 @@
 // ── State ────────────────────────────────────────────────────
 const state = {
   user: null,          // moderator session
-  participant: null,   // participant session
+  participant: JSON.parse(localStorage.getItem('participant') || 'null'),
   participantToken: localStorage.getItem('participantToken') || null,
-  workshop: null,
+  workshop: JSON.parse(localStorage.getItem('workshop') || 'null'),
 };
+
+function setParticipantSession(token, participant, workshop) {
+  state.participantToken = token;
+  state.participant = participant;
+  state.workshop = workshop;
+  localStorage.setItem('participantToken', token);
+  localStorage.setItem('participant', JSON.stringify(participant));
+  localStorage.setItem('workshop', JSON.stringify(workshop));
+}
+
+let sseConnection = null; // active moderator SSE stream, closed on every navigation
+
+function clearParticipantSession() {
+  state.participant = null;
+  state.participantToken = null;
+  state.workshop = null;
+  localStorage.removeItem('participantToken');
+  localStorage.removeItem('participant');
+  localStorage.removeItem('workshop');
+}
 
 // ── Utilities ────────────────────────────────────────────────
 async function api(method, path, body) {
@@ -19,7 +39,7 @@ async function api(method, path, body) {
     credentials: 'include',
   };
   if (state.participantToken) {
-    opts.headers['Authorization'] = `******;
+    opts.headers['Authorization'] = `Bearer ${state.participantToken}`;
   }
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch('/api' + path, opts);
@@ -45,6 +65,12 @@ function el(tag, attrs = {}, ...children) {
 
 function navigate(hash) { location.hash = hash; }
 
+async function joinWorkshop(code, name) {
+  const result = await api('POST', `/workshops/${code}/join`, { name });
+  setParticipantSession(result.token, result.participant, result.workshop);
+  navigate(`#workshop/${code}`);
+}
+
 function showToast(title, body, type = '') {
   const container = document.getElementById('toast-container') ||
     (() => { const c = el('div', { id: 'toast-container', className: 'toast-container' }); document.body.appendChild(c); return c; })();
@@ -63,7 +89,10 @@ function shortPreview(text, len = 60) {
 
 function formatDate(iso) {
   if (!iso) return '';
-  const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
+  // SQLite's datetime('now') yields "YYYY-MM-DD HH:MM:SS" (UTC, space-separated) —
+  // normalize to strict ISO 8601 so Date parsing is reliable across browsers.
+  const normalized = iso.replace(' ', 'T');
+  const d = new Date(normalized.endsWith('Z') ? normalized : normalized + 'Z');
   return d.toLocaleString();
 }
 
@@ -92,14 +121,14 @@ function renderNav() {
 async function doLogout() {
   await api('POST', '/auth/logout').catch(() => {});
   state.user = null;
-  state.participant = null;
-  state.participantToken = null;
-  localStorage.removeItem('participantToken');
+  clearParticipantSession();
   navigate('#');
 }
 
 // ── Router ───────────────────────────────────────────────────
 async function router() {
+  if (sseConnection) { sseConnection.close(); sseConnection = null; }
+
   const hash = location.hash.replace(/^#\/?/, '') || '';
   const parts = hash.split('/');
   const view = parts[0];
@@ -155,12 +184,7 @@ async function renderHome() {
     const name = nameInput.value.trim();
     if (!code || !name) { showToast('Please fill in all fields', '', 'warning'); return; }
     try {
-      const result = await api('POST', `/workshops/${code}/join`, { name });
-      state.participantToken = result.token;
-      state.participant = result.participant;
-      state.workshop = result.workshop;
-      localStorage.setItem('participantToken', result.token);
-      navigate(`#workshop/${code}`);
+      await joinWorkshop(code, name);
     } catch (err) {
       showToast('Could not join workshop', err.message, 'warning');
     }
@@ -203,12 +227,7 @@ function renderJoinWorkshop(prefillCode) {
     const name = nameInput.value.trim();
     if (!code || !name) { showToast('Please fill in all fields', '', 'warning'); return; }
     try {
-      const result = await api('POST', `/workshops/${code}/join`, { name });
-      state.participantToken = result.token;
-      state.participant = result.participant;
-      state.workshop = result.workshop;
-      localStorage.setItem('participantToken', result.token);
-      navigate(`#workshop/${code}`);
+      await joinWorkshop(code, name);
     } catch (err) {
       showToast('Could not join workshop', err.message, 'warning');
     }
@@ -234,20 +253,6 @@ function renderJoinWorkshop(prefillCode) {
 
 // ── Participant Workshop page ─────────────────────────────────
 async function renderParticipantWorkshop(code) {
-  // Restore session if we have a token
-  if (state.participantToken && !state.participant) {
-    try {
-      const stickies = await api('GET', '/stickies/mine');
-      // If successful, participant is authenticated
-    } catch (err) {
-      if (err.status === 401) {
-        state.participantToken = null;
-        localStorage.removeItem('participantToken');
-        navigate('#join/' + code);
-        return el('div', {});
-      }
-    }
-  }
   if (!state.participantToken) {
     navigate('#join/' + code);
     return el('div', {});
@@ -256,11 +261,15 @@ async function renderParticipantWorkshop(code) {
   let stickies = [];
   try {
     stickies = await api('GET', '/stickies/mine');
-    if (!state.workshop) {
+    if (!state.workshop || state.workshop.code !== code) {
       state.workshop = await api('GET', `/workshops/${code}`);
     }
   } catch (err) {
-    if (err.status === 401) { navigate('#join/' + code); return el('div', {}); }
+    if (err.status === 401) {
+      clearParticipantSession();
+      navigate('#join/' + code);
+      return el('div', {});
+    }
     throw err;
   }
 
@@ -398,12 +407,7 @@ async function renderStickyEditor(stickyId) {
   }
 
   if (sticky.image_data) {
-    activeTab = 'draw';
-    // Will be initialized after render
-    setTimeout(() => {
-      initCanvasEditor(canvas, sticky.image_data);
-      editorInitialized = true;
-    }, 50);
+    switchTab('draw');
   }
 
   return el('div', { className: 'page' },
@@ -669,8 +673,6 @@ async function renderModeratorDashboard() {
 }
 
 // ── Moderator Workshop view ──────────────────────────────────
-let sseConnection = null;
-
 async function renderModeratorWorkshop(code) {
   if (!state.user) {
     try { state.user = await api('GET', '/auth/me'); }
@@ -685,29 +687,34 @@ async function renderModeratorWorkshop(code) {
     return renderError('Could not load workshop: ' + err.message);
   }
 
-  // SSE connection
-  if (sseConnection) { sseConnection.close(); sseConnection = null; }
+  // SSE connection for live moderator notifications
+  const submittedList = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' } });
+  renderSubmittedList(stickies, submittedList);
 
-  const notificationsContainer = el('div', { id: 'notifications-list' });
+  function refreshSubmittedList() {
+    api('GET', `/stickies/workshop/${code}?status=submitted`)
+      .then((s) => renderSubmittedList(s, submittedList))
+      .catch(() => {});
+  }
 
-  setTimeout(() => {
-    sseConnection = new EventSource(`/api/stream/${code}`);
-    sseConnection.onmessage = (e) => {
-      try {
-        const event = JSON.parse(e.data);
-        if (event.type === 'sticky_submitted') {
-          showToast(
-            `📌 New sticky from ${event.participant_name}`,
-            `Sticky #${event.participant_sticky_index}: ${event.preview}`,
-          );
-          // Reload stickies list
-          api('GET', `/stickies/workshop/${code}?status=submitted`).then(s => {
-            renderSubmittedList(s, submittedList);
-          }).catch(() => {});
+  sseConnection = new EventSource(`/api/stream/${code}`);
+  sseConnection.onmessage = (e) => {
+    try {
+      const event = JSON.parse(e.data);
+      if (event.type === 'sticky_submitted') {
+        showToast(
+          `📌 New sticky from ${event.participant_name}`,
+          `Sticky #${event.participant_sticky_index}: ${event.preview}`,
+        );
+        refreshSubmittedList();
+      } else if (event.type === 'sticky_printed') {
+        if (event.method === 'autoprint') {
+          showToast('🖨️ Auto-printed', 'A submitted sticky was printed automatically.', 'success');
         }
-      } catch (_) {}
-    };
-  }, 100);
+        refreshSubmittedList();
+      }
+    } catch (_) {}
+  };
 
   // Autoprint toggle
   let autoprint = workshop.autoprint;
@@ -720,9 +727,6 @@ async function renderModeratorWorkshop(code) {
       toggleBtn.className = `toggle ${autoprint ? 'on' : ''}`;
     });
   }});
-
-  const submittedList = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' } });
-  renderSubmittedList(stickies, submittedList);
 
   return el('div', { className: 'page-wide' },
     el('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '16px', flexWrap: 'wrap', marginBottom: '24px' } },
@@ -743,9 +747,6 @@ async function renderModeratorWorkshop(code) {
     ),
     el('div', { className: 'card', style: { marginTop: '16px' } },
       el('h2', {}, '📥 Submitted Stickies'),
-      stickies.length === 0
-        ? el('p', { style: { color: 'var(--gray-600)', marginTop: '12px' } }, 'No submitted stickies yet. Waiting for participants…')
-        : null,
       submittedList,
     ),
   );
@@ -753,7 +754,10 @@ async function renderModeratorWorkshop(code) {
 
 function renderSubmittedList(stickies, container) {
   container.innerHTML = '';
-  if (stickies.length === 0) return;
+  if (stickies.length === 0) {
+    container.appendChild(el('p', { style: { color: 'var(--gray-600)', marginTop: '12px' } }, 'No submitted stickies yet. Waiting for participants…'));
+    return;
+  }
   for (const s of stickies) {
     const code = s.workshop_code;
     const row = el('div', { className: 'card', style: { display: 'flex', gap: '12px', alignItems: 'center', padding: '14px', cursor: 'pointer' }, onclick: () => navigate(`#moderator/sticky/${s.id}`) },
@@ -824,12 +828,14 @@ async function renderModeratorSticky(stickyId) {
         el('span', {}, '·'),
         el('span', {}, `Submitted: ${formatDate(sticky.submitted_at)}`),
       ),
-      sticky.image_data
-        ? el('img', { src: sticky.image_data, style: { maxWidth: '100%', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)' } })
-        : null,
-      sticky.content
-        ? el('div', { className: 'sticky-card', style: { marginTop: '12px', cursor: 'default' } }, sticky.content)
-        : null,
+      el('div', { style: { fontSize: '0.85rem', color: 'var(--gray-600)', marginBottom: '6px' } }, '🖨️ Print preview (as sent to the C17 printer)'),
+      el('div', { style: { textAlign: 'center', background: '#f4f4f4', padding: '16px', borderRadius: 'var(--radius)' } },
+        el('img', {
+          src: `/api/stickies/${stickyId}/print-render`,
+          alt: 'Print preview',
+          style: { maxWidth: '260px', width: '100%', border: '1px solid var(--gray-200)', borderRadius: '2px', boxShadow: '0 1px 4px rgba(0,0,0,0.15)', background: '#fff' },
+        }),
+      ),
       el('div', { style: { display: 'flex', gap: '12px', marginTop: '24px', flexWrap: 'wrap' } },
         sticky.status === 'submitted'
           ? el('button', { className: 'btn btn-green btn-lg', onclick: printSticky }, '🖨️ Print')
