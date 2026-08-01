@@ -1,6 +1,6 @@
 # StickyPrinter — Project Status & Continuation Notes
 
-Last updated: 2026-07-31. This file is the handoff document for continuing
+Last updated: 2026-08-01. This file is the handoff document for continuing
 work on this project from any machine — read this first, then
 [`docs/android-app.md`](android-app.md) if you're picking up the Android
 work specifically.
@@ -11,14 +11,23 @@ The web app (Node/Express backend + vanilla-JS SPA frontend) is functional
 end-to-end: moderator login/register, workshop creation, participant join
 via workshop code, sticky creation (text + canvas drawing), submit/print/
 postpone/reject flow, live moderator notifications via SSE, autoprint
-toggle, and a print preview that shows exactly what would be sent to the
-physical printer.
+toggle, a print preview showing exactly what gets sent to the printer
+(composed at the C17's real resolution, rotated 90° with auto-fit text
+sizing so it prints legibly on 57×101mm label stock — see "Print
+composition" below), and a print-complete chime.
 
-Two independent physical-printing paths now exist (the backend itself
-can't print — see "Local print agent" below for why): a Windows Python
-agent (`deploy/print-agent/`) and direct Web Bluetooth printing from the
-moderator's Chrome/Edge tab (`public/js/blePrinter.js`). Neither has been
-confirmed against real hardware yet — see "Next steps".
+**Both physical-printing paths are now confirmed working on real
+hardware**: the Windows Python agent (`deploy/print-agent/`) and direct
+Web Bluetooth printing from the moderator's Chrome/Edge tab
+(`public/js/blePrinter.js`). Getting there took several real bugs found
+and fixed against the user's actual C17 — see the dated sections below,
+they're worth reading before assuming either path "just works" in a new
+environment.
+
+Moderators can also see already-printed stickies (not just the pending
+queue) and reprint them — useful since thermal paper tears or runs out
+mid-print — and can mark individual stickies "valuable" to exempt them
+from the 24h auto-delete every submitted sticky is otherwise subject to.
 
 Test suite: `npm test` (Jest + Supertest, 30 tests, all passing).
 **Requires Node.js ≥ 22** (see "Why Node ≥ 22" below).
@@ -62,6 +71,34 @@ gets printed":
   logic in Kotlin, just consume this endpoint (or extract the same
   composition server-side into a raw-pixel endpoint if the Android app
   ends up needing pre-dithered data instead of PNG — not decided yet).
+
+**Update 2026-08-01 — rotated, auto-fit layout.** The first real physical
+print came out with unreadably tiny text (~2mm, a hardcoded 16px font) and
+a short, cramped image. Root cause: composing directly at the printer's
+384px raster width gives only ~48mm of line width to work with, and the
+old code never scaled font size up for short content. Fix: content is now
+composed on a wide, short **logical** canvas (normal reading orientation,
+~101mm-equivalent wide × the fixed 384px/~48mm tall) with the font
+auto-sized (`fitTextBlock`, 26–140px, binary-scans font sizes top-down) to
+fill the available height — then the whole logical canvas is rotated 90°
+clockwise into the final 384px-wide printable PNG. Physical result: ~57mm
+wide × ~101mm long by default (matches standard 57×25mm adhesive label
+stock run 4-up as a "panorama"), meant to be mounted with its long edge
+against the board so the (now vertical) text reads at full size. If text
+is too long to fit even at the 26px floor, the logical width (which
+becomes print *length* after rotation — the printer's flexible axis) grows
+in 160px steps instead of shrinking font further, capped at 4× the target
+length. The `PRINTER_WIDTH_PX` output-width contract (always exactly 384)
+is unchanged, so `blePrinter.js`, `printer.js`, and the print agent needed
+no changes. Verified: rotation direction checked with a labeled-quadrant
+pixel test (not just visual inspection), several real renders inspected
+visually (short/medium/long text, image-only, image+text) — chosen font
+sizes range from 140px for a short phrase down to ~26-36px for long
+paragraphs, all a large improvement over the old fixed 16px. Also widened
+the participant drawing canvas (600×400 → 640×280) to better match the
+image area's aspect ratio post-rotation, so drawings letterbox less.
+**Not verified: an actual physical print of the new layout** — only the
+original (broken, tiny-text) layout has been printed for real so far.
 
 Security note: `image_data` is untrusted participant input. `loadImage()`
 from `@napi-rs/canvas` will fetch a plain URL string, which would be an SSRF
@@ -206,10 +243,33 @@ and 1-bit image encoding (LSB-first bit packing, 48 bytes/row, padded to
   built from the **actual bytes in the user's own captured log** from
   print.natey.me (payload byte `0x5f` → 95%, matching their console output
   exactly).
-- **Not verified:** an actual GATT connection, a real print, or the
-  browser-side image-encoding path (`encodePngTo1Bit`, which needs
-  `createImageBitmap`/`Canvas` — browser-only APIs, can't run in Node).
-  Needs a real on-site test in Chrome with the C17 in range.
+- **Update 2026-08-01 — first real GATT connection attempt, one bug
+  found+fixed.** The device picker/pairing worked immediately (as expected
+  from the earlier print.natey.me finding), but printing failed with
+  "Printer not ready: error code undefined". Root cause: `checkStatus()`
+  read fixed byte positions (`payload[12]`/`[13]`) from the `A1` status
+  response that the primary protocol reference itself marks as
+  unconfirmed/varies by firmware — this printer's real response is
+  evidently shaped differently, so the parse produced a false "not ready".
+  Fixed by making `checkStatus()` advisory only (guards against short
+  payloads, and `printPng()` now catches/logs instead of aborting on it) —
+  the reliable readiness signal is the print request's own accept/reject
+  response (`CMD.PRINT_REQUEST` ack), which is well-documented and was
+  already being checked separately. Still not verified: an actual
+  completed physical print (this fix is unblocking, not yet confirmed to
+  result in real paper output) — that's the next on-site test.
+- **Browser-cache trap (2026-08-01):** after deploying the fix above, the
+  user still saw the *old* error text — turned out to be the browser
+  serving a cached `blePrinter.js` from before the fix, not stale server
+  code (`run-local.sh` always runs the code on disk as-is; this app has no
+  build step, so nothing needed rebuilding). Fixed at the actual root
+  cause in `src/server.js`: static assets and the SPA-fallback `index.html`
+  now get `Cache-Control: no-cache`, forcing the browser to always
+  revalidate with the server (still gets a fast 304 when unchanged — ETag
+  revalidation verified working) instead of trusting a heuristically-cached
+  local copy. Applies to local dev *and* production redeploys equally;
+  without it, a moderator's browser could just as easily miss a real
+  deployed fix after any future `deploy/install.sh` redeploy.
 
 Integrated into `renderModeratorSticky` in `public/js/app.js`: a
 "🔵 Print via Bluetooth" button (only shown when
@@ -218,6 +278,15 @@ Integrated into `renderModeratorSticky` in `public/js/app.js`: a
 the Python agent / local-CLI path). Both end up calling
 `POST /api/stickies/:id/print` to mark the sticky printed — the Bluetooth
 path just does the actual physical printing client-side first.
+
+**Progress bar (2026-08-01):** `BlePrinter.printPng()` takes an
+`onProgress({phase, sent, total})` callback, called through the phases
+`encoding` → `preparing` → `sending` (byte-level progress during the
+chunked `AE03` transfer — this is the determinate part of the bar) →
+`finishing` (indeterminate wait for the `AA` print-complete notification)
+→ `complete`. Wired to a small progress bar (`.ble-progress-box` in
+`styles.css`) shown under the print buttons during the print; the
+Bluetooth button is disabled while printing to prevent double-invocation.
 
 **Not yet evaluated: `clementvp/mxw01-thermal-printer`** — an npm package
 (`mxw01-thermal-printer`, TypeScript) the user also found, with adapters
@@ -229,6 +298,75 @@ Its Node.js adapter is a potentially much cleaner replacement for the
 *entire Python print agent* (same language as the rest of this backend, no
 venv/pip/bleak version wrangling) — flagged as a next step, not yet acted
 on.
+
+## Print-complete chime and reprint support, 2026-08-01
+
+**Chime:** `playPrintChime()` in `app.js` synthesizes a short two-note tone
+via the Web Audio API (no audio asset needed) so a moderator standing at
+the board/flipchart hears when a sticky is ready to tear off. Wired to all
+three print-completion points: the autoprint SSE event, the "Print
+(agent/local)" button, and — most accurately, since it's the one place we
+actually get hardware confirmation — the Bluetooth print's `complete`
+phase (fires only once the printer's `AA` "print complete" notification
+has been received). The autoprint case is honest-but-imprecise: it fires
+on the `sticky_printed` SSE event, which is emitted server-side as soon as
+the (possibly-ineffective, see printer.js notes above) autoprint attempt
+returns — for the Python-agent-driven real print, that can be slightly
+*before* the physical print actually finishes, since the agent doesn't
+report completion back to the web UI (existing known gap).
+
+**Reprint support:** the backend already allowed printing a sticky whose
+status was `'submitted'` *or* `'printed'` (`routes/stickies.js`'s print
+endpoint), and `print-render` never checked status at all — reprinting was
+only blocked by the frontend hiding the print buttons and the sticky
+disappearing from view once printed. Both fixed, no backend changes
+needed (verified via a live server: printing twice keeps status
+`'printed'` and updates `printed_at`; `print-render` returns 200 for an
+already-printed sticky):
+- `renderModeratorWorkshop` now fetches and shows a second, collapsible
+  "🖨️ Printed Stickies" list (`<details>`, native HTML, no extra JS)
+  alongside the existing submitted queue — `renderSubmittedList` was
+  generalized into `renderStickyList(stickies, container, {emptyText,
+  timestampLabel, timestampField})` to serve both lists without
+  duplicating the row-rendering code.
+- `renderModeratorSticky` shows the print buttons (Bluetooth + agent/local)
+  whenever status is `submitted` *or* `printed`, relabeled "Print again"
+  for the latter, and shows a `Printed: <timestamp>` line when applicable.
+  Reject stays submitted-only, matching the backend's own restriction
+  (sending an already-printed, possibly already-torn-off physical note
+  back for participant rework doesn't make sense).
+
+## 24h auto-delete + "valuable" exemption, 2026-08-01
+
+Submitted stickies are now permanently deleted 24h after `submitted_at`
+unless a moderator has marked them valuable — `stickyOps.deleteExpired()`
+in `src/db.js` (`DELETE FROM stickies WHERE submitted_at IS NOT NULL AND
+is_valuable = 0 AND submitted_at < datetime('now', '-24 hours')`), run by
+`src/server.js` once at startup and then every 15 minutes via a `setInterval`
+that's `.unref()`'d (so it can't block process shutdown) and only started
+inside the `require.main === module` guard (so requiring the app in tests
+doesn't spin up a background timer). Drafts are naturally exempt —
+`submitted_at` is NULL until actually submitted (and gets cleared again by
+`reject()`), so the `IS NOT NULL` condition excludes them without a special
+case.
+
+New column `stickies.is_valuable` (migrated via a `PRAGMA table_info`
+check + `ALTER TABLE` in `db.js`'s `initialize()`, since `CREATE TABLE IF
+NOT EXISTS` doesn't touch already-existing tables — verified against a
+hand-built pre-migration database that the column gets added and existing
+rows survive). New endpoint `PUT /api/stickies/:id/valuable` (moderator +
+workshop-ownership checked, same pattern as `/print`/`/reject`) toggles it.
+Moderator sticky view got a "⭐ Mark as valuable" / "☆ Unmark" button and
+a status-line badge; both submitted/printed list rows show a ⭐ prefix for
+valuable ones so moderators can spot protected stickies without opening
+each one.
+
+**Verified directly** (not just read through): the deletion query against
+four hand-crafted stickies with explicit `submitted_at` timestamps (2h old
+not-valuable → kept, 30h old not-valuable → deleted, 30h old but valuable →
+kept, 24.1h old → deleted) deleted exactly the right two; the
+mark/unmark API round-trip; unauthorized requests rejected; a draft's
+`submitted_at` is genuinely `null` over the real API.
 
 ## Known gaps / deliberately deferred
 
@@ -246,11 +384,12 @@ on.
   what's actually needed (a desktop app would need Bluetooth too, with the
   same protocol-porting work) and because the user wants to build Android/
   Kotlin know-how. The README already reflects this.
-- Moderator submitted-stickies **list** thumbnails (`renderSubmittedList`)
-  still show the raw `image_data`/text preview, not the composed
-  print-render PNG — deliberate, to avoid N extra server-side canvas
-  renders just for a list glance. Only the sticky **detail** view
-  (`renderModeratorSticky`) shows the real print composition.
+- Moderator sticky **list** thumbnails (`renderStickyList`, used for both
+  the submitted queue and the printed archive) still show the raw
+  `image_data`/text preview, not the composed print-render PNG —
+  deliberate, to avoid N extra server-side canvas renders just for a list
+  glance. Only the sticky **detail** view (`renderModeratorSticky`) shows
+  the real (rotated, auto-fit) print composition.
 - No rate limiting on `/api/auth/login` or `/register` (brute-force is
   possible). Not addressed yet.
 - No CI pipeline (tests exist, nothing runs them automatically on push).
@@ -278,15 +417,11 @@ override `DOMAIN=`.
 
 ## Next steps (pick up here)
 
-1. **Verify both print paths against real hardware, on-site with the C17:**
-   - Web Bluetooth: open the moderator sticky view in Chrome, click
-     "Print via Bluetooth", confirm a real print. This is the biggest
-     untested piece of what exists so far — protocol-level correctness is
-     well-verified (see above), but nothing browser/GATT-specific has run
-     against real hardware yet.
-   - Python agent: confirm the `bleak<1.0.0` pin actually fixes the
-     Windows scan (not just that pip resolves it), now without the
-     Windows-pairing red herring.
+1. **Verify the new rotated/auto-fit print layout on real paper** (see
+   "Update 2026-08-01 — rotated, auto-fit layout" above) — this has been
+   rendered and visually inspected as PNGs but never actually printed; the
+   *previous* (tiny-text, unrotated) layout is the only one confirmed on
+   real hardware so far.
 2. **Consider rewriting the print agent in Node instead of Python**, using
    `clementvp/mxw01-thermal-printer`'s Node/`@stoprocent/noble` adapter
    (see above) — would eliminate the whole venv/pip/bleak-version class of
@@ -296,15 +431,21 @@ override `DOMAIN=`.
 3. Android app — see [`docs/android-app.md`](android-app.md) for the full
    technical plan (protocol details, BLE specifics, effort estimate). Not
    started yet; it's a separate project/repo, not part of this Node
-   codebase. The Web Bluetooth research done today (protocol details, two
+   codebase. The Web Bluetooth research (protocol details, two
    independently cross-validated reference implementations) is directly
    reusable for the Android BLE module too.
 4. Rate limiting on auth endpoints.
 5. CI (run `npm test` on push).
 6. Decide whether `printer.js`'s server-side CLI fallback is worth keeping
-   now that there are two working local-printing paths (agent, Web
-   Bluetooth), or whether it should just be removed to avoid three
+   now that there are two confirmed-working local-printing paths (agent,
+   Web Bluetooth), or whether it should just be removed to avoid three
    different "how printing happens" code paths.
 7. Print-agent v2 ideas (not needed yet): a real moderator API token
    instead of plain-text password in `config.json`; report physical print
-   failures back to the web UI instead of only logging them locally.
+   failures back to the web UI instead of only logging them locally (this
+   would also make the autoprint chime's timing exact instead of
+   approximate — see the chime notes above).
+8. The 24h auto-delete interval (15 min) and window (24h) are hardcoded in
+   `src/server.js`/`src/db.js` — fine for now, but if these ever need to be
+   configurable per-workshop rather than global, that's a real schema
+   change (a column on `workshops`), not a quick tweak.

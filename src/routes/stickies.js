@@ -224,6 +224,27 @@ router.get('/:id/print-render', requireModerator, async (req, res) => {
   }
 });
 
+// PUT /api/stickies/:id/valuable - Mark/unmark a sticky as valuable, exempting it
+// from the 24h auto-delete (moderator only)
+router.put('/:id/valuable', requireModerator, (req, res) => {
+  try {
+    const sticky = stickyOps.findById(req.params.id);
+    if (!sticky) {
+      return res.status(404).json({ error: 'Sticky not found' });
+    }
+    const db = require('../db').getDb();
+    const workshopRow = db.prepare('SELECT * FROM workshops WHERE id = ?').get(sticky.workshop_id);
+    if (!workshopRow || workshopRow.moderator_id !== req.session.moderatorId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const updated = stickyOps.setValuable(sticky.id, !!req.body.valuable);
+    return res.json(updated);
+  } catch (err) {
+    console.error('Set valuable error:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // POST /api/stickies/:id/reject - Reject/return a sticky to participant (moderator only)
 router.post('/:id/reject', requireModerator, (req, res) => {
   try {

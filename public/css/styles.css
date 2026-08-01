@@ -336,6 +336,24 @@ h3 { font-size: 1.1rem; margin-bottom: 6px; }
 }
 .tool-btn.active, .tool-btn:hover { background: var(--yellow); border-color: var(--yellow-dark); }
 
+/* ── Bluetooth print progress ────────────────────────────── */
+.ble-progress-box { margin-top: 16px; }
+.ble-progress-label { font-size: 0.85rem; color: var(--gray-600); margin-bottom: 6px; }
+.ble-progress-track {
+  width: 100%;
+  height: 10px;
+  background: var(--gray-200);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ble-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--green);
+  border-radius: 999px;
+  transition: width 0.2s ease-out;
+}
+
 /* ── Responsive ──────────────────────────────────────────── */
 @media (max-width: 600px) {
   .hero h1 { font-size: 1.6rem; }

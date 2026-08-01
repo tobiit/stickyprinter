@@ -64,6 +64,13 @@ function initialize(database) {
       printed_at TEXT
     );
   `);
+
+  // Migration: is_valuable was added after the initial release, so
+  // CREATE TABLE IF NOT EXISTS above won't add it to existing databases.
+  const columns = database.prepare("PRAGMA table_info(stickies)").all();
+  if (!columns.some((c) => c.name === 'is_valuable')) {
+    database.exec('ALTER TABLE stickies ADD COLUMN is_valuable INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 // Workshop code generation: WS-ABCD-1234
@@ -201,6 +208,25 @@ const stickyOps = {
   },
   delete(id) {
     return getDb().prepare('DELETE FROM stickies WHERE id = ?').run(id);
+  },
+  setValuable(id, valuable) {
+    const db = getDb();
+    db.prepare(`
+      UPDATE stickies SET is_valuable = ?, updated_at = datetime('now') WHERE id = ?
+    `).run(valuable ? 1 : 0, id);
+    return db.prepare('SELECT * FROM stickies WHERE id = ?').get(id);
+  },
+  // Permanently removes submitted stickies older than 24h, unless marked
+  // valuable. submitted_at is NULL for drafts (and rejected-back-to-draft
+  // stickies), so those are naturally excluded — the clock only runs from
+  // an actual submission.
+  deleteExpired() {
+    return getDb().prepare(`
+      DELETE FROM stickies
+      WHERE submitted_at IS NOT NULL
+        AND is_valuable = 0
+        AND submitted_at < datetime('now', '-24 hours')
+    `).run().changes;
   },
 };
 

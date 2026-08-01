@@ -82,6 +82,34 @@ function showToast(title, body, type = '') {
   setTimeout(() => toast.remove(), 5000);
 }
 
+// Plays a short two-note chime when a print finishes — lets a moderator
+// standing at the board/flipchart (away from the screen) hear that a
+// sticky is ready to tear off, without needing an audio file. Reuses one
+// AudioContext (browsers require a user gesture to unlock audio; that's
+// satisfied by whatever click led here — manual print buttons, or having
+// navigated into the workshop view in the first place for autoprint).
+let audioContext = null;
+function playPrintChime() {
+  try {
+    audioContext = audioContext || new (window.AudioContext || window.webkitAudioContext)();
+    const now = audioContext.currentTime;
+    for (const [freq, start] of [[880, 0], [1318.51, 0.12]]) {
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, now + start);
+      gain.gain.linearRampToValueAtTime(0.25, now + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + start + 0.45);
+      osc.connect(gain).connect(audioContext.destination);
+      osc.start(now + start);
+      osc.stop(now + start + 0.45);
+    }
+  } catch (_) {
+    // Web Audio unavailable/blocked — the toast/UI still communicates completion.
+  }
+}
+
 function shortPreview(text, len = 60) {
   if (!text) return '(no text)';
   return text.length > len ? text.substring(0, len) + '…' : text;
@@ -333,7 +361,11 @@ async function renderStickyEditor(stickyId) {
   }
 
   // Canvas editor
-  const canvas = el('canvas', { id: 'sticky-canvas', width: '600', height: '400' });
+  // Wider-than-tall to roughly match the printed layout's image area
+  // (~2.7:1 after the print composition rotates the sticky 90° onto
+  // 57x101mm label stock — see src/printRender.js) so drawings aren't
+  // heavily letterboxed when printed.
+  const canvas = el('canvas', { id: 'sticky-canvas', width: '640', height: '280' });
   const textArea = el('textarea', { placeholder: 'Write your sticky note text here…', style: { width: '100%', minHeight: '80px', marginTop: '12px', padding: '10px', border: '1.5px solid var(--gray-200)', borderRadius: 'var(--radius)', fontFamily: 'var(--font)', fontSize: '0.95rem' } });
   textArea.value = sticky.content || '';
 
@@ -679,21 +711,31 @@ async function renderModeratorWorkshop(code) {
     catch (_) { navigate('#moderator/login'); return el('div', {}); }
   }
 
-  let workshop, stickies = [];
+  let workshop, submitted = [], printed = [];
   try {
     workshop = await api('GET', `/workshops/${code}`);
-    stickies = await api('GET', `/stickies/workshop/${code}?status=submitted`);
+    submitted = await api('GET', `/stickies/workshop/${code}?status=submitted`);
+    printed = await api('GET', `/stickies/workshop/${code}?status=printed`);
   } catch (err) {
     return renderError('Could not load workshop: ' + err.message);
   }
 
   // SSE connection for live moderator notifications
   const submittedList = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' } });
-  renderSubmittedList(stickies, submittedList);
+  renderStickyList(submitted, submittedList, { emptyText: 'No submitted stickies yet. Waiting for participants…', timestampLabel: 'Submitted', timestampField: 'submitted_at' });
+
+  const printedList = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '12px' } });
+  renderStickyList(printed, printedList, { emptyText: 'No stickies printed yet.', timestampLabel: 'Printed', timestampField: 'printed_at' });
 
   function refreshSubmittedList() {
     api('GET', `/stickies/workshop/${code}?status=submitted`)
-      .then((s) => renderSubmittedList(s, submittedList))
+      .then((s) => renderStickyList(s, submittedList, { emptyText: 'No submitted stickies yet. Waiting for participants…', timestampLabel: 'Submitted', timestampField: 'submitted_at' }))
+      .catch(() => {});
+  }
+
+  function refreshPrintedList() {
+    api('GET', `/stickies/workshop/${code}?status=printed`)
+      .then((s) => renderStickyList(s, printedList, { emptyText: 'No stickies printed yet.', timestampLabel: 'Printed', timestampField: 'printed_at' }))
       .catch(() => {});
   }
 
@@ -710,8 +752,10 @@ async function renderModeratorWorkshop(code) {
       } else if (event.type === 'sticky_printed') {
         if (event.method === 'autoprint') {
           showToast('🖨️ Auto-printed', 'A submitted sticky was printed automatically.', 'success');
+          playPrintChime();
         }
         refreshSubmittedList();
+        refreshPrintedList();
       }
     } catch (_) {}
   };
@@ -749,17 +793,23 @@ async function renderModeratorWorkshop(code) {
       el('h2', {}, '📥 Submitted Stickies'),
       submittedList,
     ),
+    el('details', { className: 'card', style: { marginTop: '16px' } },
+      el('summary', { style: { cursor: 'pointer', fontSize: '1.1rem', fontWeight: '700' } }, '🖨️ Printed Stickies'),
+      printedList,
+    ),
   );
 }
 
-function renderSubmittedList(stickies, container) {
+// Used for both the submitted queue and the printed archive (moderators can
+// reopen an already-printed sticky and print it again — thermal paper tears
+// or runs out mid-print often enough that this needed to be a real feature).
+function renderStickyList(stickies, container, { emptyText, timestampLabel, timestampField }) {
   container.innerHTML = '';
   if (stickies.length === 0) {
-    container.appendChild(el('p', { style: { color: 'var(--gray-600)', marginTop: '12px' } }, 'No submitted stickies yet. Waiting for participants…'));
+    container.appendChild(el('p', { style: { color: 'var(--gray-600)', marginTop: '12px' } }, emptyText));
     return;
   }
   for (const s of stickies) {
-    const code = s.workshop_code;
     const row = el('div', { className: 'card', style: { display: 'flex', gap: '12px', alignItems: 'center', padding: '14px', cursor: 'pointer' }, onclick: () => navigate(`#moderator/sticky/${s.id}`) },
       el('div', { className: 'sticky-card', style: { width: '80px', height: '80px', minHeight: 'unset', cursor: 'pointer', overflow: 'hidden' } },
         s.image_data
@@ -767,9 +817,9 @@ function renderSubmittedList(stickies, container) {
           : el('div', { style: { fontSize: '0.72rem', marginTop: '0' } }, shortPreview(s.content, 60)),
       ),
       el('div', { style: { flex: '1' } },
-        el('strong', {}, `${s.participant_name} — Sticky #${s.participant_sticky_index}`),
+        el('strong', {}, `${s.is_valuable ? '⭐ ' : ''}${s.participant_name} — Sticky #${s.participant_sticky_index}`),
         el('div', { style: { fontSize: '0.85rem', color: 'var(--gray-600)', marginTop: '4px' } }, shortPreview(s.content, 80)),
-        el('div', { style: { fontSize: '0.78rem', color: 'var(--gray-400)', marginTop: '4px' } }, 'Submitted: ' + formatDate(s.submitted_at)),
+        el('div', { style: { fontSize: '0.78rem', color: 'var(--gray-400)', marginTop: '4px' } }, `${timestampLabel}: ` + formatDate(s[timestampField])),
       ),
       el('button', { className: 'btn btn-sm btn-ghost', onclick: (e) => { e.stopPropagation(); navigate(`#moderator/sticky/${s.id}`); } }, 'View →'),
     );
@@ -799,6 +849,7 @@ async function renderModeratorSticky(stickyId) {
     try {
       await api('POST', `/stickies/${stickyId}/print`);
       showToast('Printing…', 'Sticky sent to printer.', 'success');
+      playPrintChime();
       const code = getWorkshopCode(sticky);
       if (code) navigate('#moderator/workshop/' + code);
       else history.back();
@@ -806,6 +857,32 @@ async function renderModeratorSticky(stickyId) {
       showToast('Print failed', err.message, 'warning');
     }
   }
+
+  // Bluetooth print progress bar — hidden until printViaBluetooth starts.
+  const bleProgressFill = el('div', { className: 'ble-progress-fill' });
+  const bleProgressLabel = el('div', { className: 'ble-progress-label' }, '');
+  const bleProgressBox = el('div', { className: 'ble-progress-box', style: { display: 'none' } },
+    bleProgressLabel,
+    el('div', { className: 'ble-progress-track' }, bleProgressFill),
+  );
+
+  function setBleProgress(percent, label) {
+    bleProgressBox.style.display = 'block';
+    bleProgressFill.style.width = `${percent}%`;
+    bleProgressLabel.textContent = label;
+  }
+
+  function formatKb(bytes) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  // Reprinting an already-printed sticky is a real, common need (thermal
+  // paper tears when torn off, or the roll runs out mid-print, leaving a
+  // faint/incomplete result) — the backend already accepts print requests
+  // for status 'printed', not just 'submitted'.
+  const canPrint = sticky.status === 'submitted' || sticky.status === 'printed';
+  const isReprint = sticky.status === 'printed';
+  const bleButton = el('button', { className: 'btn btn-green btn-lg', onclick: () => printViaBluetooth() }, isReprint ? '🔵 Print again via Bluetooth' : '🔵 Print via Bluetooth');
 
   // Prints directly from this browser tab over Bluetooth (no local agent
   // needed) — requires Chrome/Edge and a user gesture to pick the printer.
@@ -815,18 +892,58 @@ async function renderModeratorSticky(stickyId) {
       return;
     }
     let printer;
+    bleButton.disabled = true;
+    setBleProgress(0, 'Select the printer in the browser dialog…');
     try {
-      showToast('Select the printer…', 'Choose it from the browser dialog.', '');
       printer = await connectBlePrinter();
+      setBleProgress(0, 'Preparing image…');
       const png = await (await fetch(`/api/stickies/${stickyId}/print-render`)).blob();
-      showToast('Printing…', 'Sending to the printer over Bluetooth.', '');
-      await printer.printPng(png);
+      await printer.printPng(png, {
+        onProgress: ({ phase, sent, total }) => {
+          if (phase === 'sending') {
+            const percent = total ? Math.round((sent / total) * 100) : 0;
+            setBleProgress(percent, `Sending to printer… ${percent}% (${formatKb(sent)} / ${formatKb(total)})`);
+          } else if (phase === 'finishing') {
+            setBleProgress(100, 'Waiting for the printer to finish…');
+          } else if (phase === 'complete') {
+            setBleProgress(100, 'Done!');
+            playPrintChime();
+          }
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 400)); // let "Done!" be visible briefly
       await markPrinted();
       showToast('Printed!', '', 'success');
     } catch (err) {
+      setBleProgress(0, '');
+      bleProgressBox.style.display = 'none';
       showToast('Bluetooth print failed', err.message, 'warning');
     } finally {
+      bleButton.disabled = false;
       if (printer) printer.disconnect();
+    }
+  }
+
+  // Submitted stickies are permanently deleted 24h after submission unless
+  // marked valuable (src/db.js's deleteExpired(), run periodically by the
+  // server) — this lets the moderator exempt specific ones.
+  let isValuable = !!sticky.is_valuable;
+  const valuableBadge = el('span', { style: { fontWeight: '700', color: 'var(--yellow-dark)' } }, isValuable ? '· ⭐ Valuable' : '');
+  const valuableButton = el('button', { className: 'btn btn-ghost btn-lg', onclick: toggleValuable }, isValuable ? '☆ Unmark as valuable' : '⭐ Mark as valuable');
+
+  async function toggleValuable() {
+    try {
+      const updated = await api('PUT', `/stickies/${stickyId}/valuable`, { valuable: !isValuable });
+      isValuable = !!updated.is_valuable;
+      valuableButton.textContent = isValuable ? '☆ Unmark as valuable' : '⭐ Mark as valuable';
+      valuableBadge.textContent = isValuable ? '· ⭐ Valuable' : '';
+      showToast(
+        isValuable ? 'Marked as valuable' : 'Unmarked as valuable',
+        isValuable ? 'This sticky will not be auto-deleted.' : 'Will be auto-deleted 24h after submission, like any other.',
+        'success',
+      );
+    } catch (err) {
+      showToast('Failed', err.message, 'warning');
     }
   }
 
@@ -857,6 +974,9 @@ async function renderModeratorSticky(stickyId) {
         el('span', {}, `Status: ${sticky.status}`),
         el('span', {}, '·'),
         el('span', {}, `Submitted: ${formatDate(sticky.submitted_at)}`),
+        sticky.printed_at ? el('span', {}, '·') : null,
+        sticky.printed_at ? el('span', {}, `Printed: ${formatDate(sticky.printed_at)}`) : null,
+        valuableBadge,
       ),
       el('div', { style: { fontSize: '0.85rem', color: 'var(--gray-600)', marginBottom: '6px' } }, '🖨️ Print preview (as sent to the C17 printer)'),
       el('div', { style: { textAlign: 'center', background: '#f4f4f4', padding: '16px', borderRadius: 'var(--radius)' } },
@@ -867,16 +987,19 @@ async function renderModeratorSticky(stickyId) {
         }),
       ),
       el('div', { style: { display: 'flex', gap: '12px', marginTop: '24px', flexWrap: 'wrap' } },
-        sticky.status === 'submitted' && isWebBluetoothSupported()
-          ? el('button', { className: 'btn btn-green btn-lg', onclick: printViaBluetooth }, '🔵 Print via Bluetooth')
-          : null,
-        sticky.status === 'submitted'
-          ? el('button', { className: isWebBluetoothSupported() ? 'btn btn-ghost btn-lg' : 'btn btn-green btn-lg', onclick: printSticky }, '🖨️ Print (agent/local)')
+        canPrint && isWebBluetoothSupported() ? bleButton : null,
+        canPrint
+          ? el('button', { className: isWebBluetoothSupported() ? 'btn btn-ghost btn-lg' : 'btn btn-green btn-lg', onclick: printSticky }, isReprint ? '🖨️ Print again (agent/local)' : '🖨️ Print (agent/local)')
           : null,
         el('button', { className: 'btn btn-ghost btn-lg', onclick: postpone }, '⏭️ Postpone'),
+        valuableButton,
         sticky.status === 'submitted'
           ? el('button', { className: 'btn btn-red btn-lg', onclick: rejectSticky }, '↩️ Reject / Return for Rework')
           : null,
+      ),
+      canPrint && isWebBluetoothSupported() ? bleProgressBox : null,
+      el('p', { style: { fontSize: '0.78rem', color: 'var(--gray-400)', marginTop: '12px' } },
+        'Submitted stickies are permanently deleted 24h after submission unless marked valuable.',
       ),
     ),
   );

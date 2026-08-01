@@ -166,15 +166,26 @@ class BlePrinter {
     return payload[0];
   }
 
+  // Best-effort readiness check. The exact A1 status-payload layout isn't
+  // reliably documented (varies across firmwares/models, and even the
+  // primary protocol reference marks it as unconfirmed) — this throws only
+  // when the response clearly indicates an error, and otherwise stays
+  // quiet rather than guessing at byte positions that may not apply to
+  // this printer. Callers should treat it as advisory, not a hard gate:
+  // the print request's own accept/reject response (CMD.PRINT_REQUEST) is
+  // the reliable "is it ready" signal.
   async checkStatus() {
     const responsePromise = this._waitFor(CMD.GET_STATUS, 5000);
     await this._send(CMD.GET_STATUS, new Uint8Array([0x00]));
     const payload = await responsePromise;
+    if (payload.length < 14) {
+      return; // too short to reliably read the documented flag/error-code positions
+    }
     const overallFlag = payload[12];
-    if (overallFlag !== 0) {
-      const errorCode = payload[13];
+    const errorCode = payload[13];
+    if (overallFlag !== 0 && errorCode !== undefined) {
       const reasons = { 1: 'No paper', 9: 'No paper', 4: 'Overheated', 8: 'Low battery' };
-      throw new Error(`Printer not ready: ${reasons[errorCode] || `error code ${errorCode}`}`);
+      throw new Error(`Printer reported an error: ${reasons[errorCode] || `code ${errorCode}`}`);
     }
   }
 
@@ -182,11 +193,26 @@ class BlePrinter {
     await this._send(CMD.SET_INTENSITY, new Uint8Array([level & 0xff]));
   }
 
-  async printPng(pngBlob, { intensity = 0x5d } = {}) {
+  /**
+   * @param {Blob} pngBlob
+   * @param {{ intensity?: number, onProgress?: (info: {phase: string, sent: number, total: number}) => void }} [options]
+   *   onProgress phases: 'encoding' (converting the PNG to 1-bit), 'preparing'
+   *   (intensity/status handshake), 'sending' (streaming to the printer —
+   *   sent/total are bytes, this is the phase with real transfer progress),
+   *   'finishing' (waiting for the physical print head to finish),
+   *   'complete'.
+   */
+  async printPng(pngBlob, { intensity = 0x5d, onProgress = () => {} } = {}) {
+    onProgress({ phase: 'encoding', sent: 0, total: 0 });
     const { buffer, rowCount } = await encodePngTo1Bit(pngBlob);
 
+    onProgress({ phase: 'preparing', sent: 0, total: buffer.length });
     await this.setIntensity(intensity);
-    await this.checkStatus();
+    try {
+      await this.checkStatus();
+    } catch (err) {
+      console.warn('Printer status check inconclusive, printing anyway:', err.message);
+    }
 
     const printAckPromise = this._waitFor(CMD.PRINT_REQUEST, 5000);
     await this._send(CMD.PRINT_REQUEST, new Uint8Array([rowCount & 0xff, (rowCount >> 8) & 0xff, 0x30, 0x00]));
@@ -198,12 +224,16 @@ class BlePrinter {
     for (let offset = 0; offset < buffer.length; offset += DATA_CHUNK_SIZE) {
       const chunk = buffer.subarray(offset, offset + DATA_CHUNK_SIZE);
       await this.dataChar.writeValueWithoutResponse(chunk);
+      const sent = Math.min(offset + chunk.length, buffer.length);
+      onProgress({ phase: 'sending', sent, total: buffer.length });
       await new Promise((resolve) => setTimeout(resolve, DATA_CHUNK_DELAY_MS));
     }
 
+    onProgress({ phase: 'finishing', sent: buffer.length, total: buffer.length });
     const completePromise = this._waitFor(CMD.PRINT_COMPLETE, 30000);
     await this._send(CMD.FLUSH, new Uint8Array([0x00]));
     await completePromise;
+    onProgress({ phase: 'complete', sent: buffer.length, total: buffer.length });
   }
 
   disconnect() {
