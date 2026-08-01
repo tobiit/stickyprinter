@@ -60,17 +60,20 @@ async function composeStickyPng(sticky, participant, workshop) {
   const text = (sticky.content || '').trim();
   const hasText = text.length > 0;
 
-  const headerLines = [
-    `${workshop.name} (${workshop.code})`,
-    `${participant.name} — #${sticky.participant_sticky_index}`,
-  ];
+  // Text (and, if needed, the logical canvas itself) may grow wider than
+  // TARGET_LENGTH_PX, so a measuring context is needed before either is
+  // finalized.
+  const measureCtx = createCanvas(10, 10).getContext('2d');
+
+  // One header line (workshop + participant + sticky #) instead of two,
+  // to leave more of the fixed 384px logical height for actual content —
+  // falls back to two lines only if that's too long to fit at the
+  // baseline width (still safe once the canvas grows wider for long text).
+  const headerLines = buildHeaderLines(measureCtx, workshop, participant, sticky, TARGET_LENGTH_PX - PADDING * 2);
   const headerHeight = headerLines.length * HEADER_LINE_HEIGHT + 12; // + divider gap
   const contentHeight = LOGICAL_HEIGHT - headerHeight - PADDING * 2;
   const contentAvailableWidth = TARGET_LENGTH_PX - PADDING * 2;
 
-  // Text needs a measuring context before we know the final logical width
-  // (fitTextBlock may grow it for long content).
-  const measureCtx = createCanvas(10, 10).getContext('2d');
   let textBlock = null;
   let imageBoxHeight = 0;
   let logicalWidth = TARGET_LENGTH_PX;
@@ -119,6 +122,18 @@ async function composeStickyPng(sticky, participant, workshop) {
   }
 
   return rotate90Clockwise(logical).encode('png');
+}
+
+function buildHeaderLines(ctx, workshop, participant, sticky, maxWidth) {
+  const combined = `${workshop.name} (${workshop.code}) · ${participant.name} — #${sticky.participant_sticky_index}`;
+  ctx.font = `bold ${HEADER_FONT_SIZE}px sans-serif`;
+  if (ctx.measureText(combined).width <= maxWidth) {
+    return [combined];
+  }
+  return [
+    `${workshop.name} (${workshop.code})`,
+    `${participant.name} — #${sticky.participant_sticky_index}`,
+  ];
 }
 
 /**
