@@ -7,6 +7,14 @@
 # Usage (run as root from a checkout of this repository):
 #   sudo DOMAIN=stickies.basisadresse.de CERTBOT_EMAIL=you@example.com deploy/install.sh
 #
+# If port 3000 is already used by something else on this server, set
+# APP_PORT on first install:
+#   sudo DOMAIN=... CERTBOT_EMAIL=... APP_PORT=3010 deploy/install.sh
+# To change the port on an *existing* install (APP_PORT is only used to
+# generate .env the first time), edit PORT= in /opt/stickyprinter/.env
+# directly, then just re-run this script (no APP_PORT needed) to update
+# nginx and restart the service to match.
+#
 # Safe to re-run: re-running redeploys the app (new code, npm ci, service
 # restart) without touching the existing database, session secret or
 # certificate.
@@ -98,6 +106,17 @@ EOF
   chmod 600 "$ENV_FILE"
 else
   log ".env already exists, leaving it untouched (edit $ENV_FILE manually if needed)"
+  # .env is the source of truth for the running port once it exists.
+  # Re-read it so the nginx config generated below always matches what the
+  # app actually listens on — otherwise a re-run with a different APP_PORT
+  # would update nginx but not the already-existing .env, leaving them
+  # pointing at different ports. To actually change the port: edit PORT=
+  # in .env, then re-run this script (no APP_PORT needed).
+  ENV_PORT="$(grep -E '^PORT=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
+  if [[ -n "$ENV_PORT" && "$ENV_PORT" != "$APP_PORT" ]]; then
+    log "Using PORT=$ENV_PORT from existing .env (overrides APP_PORT=$APP_PORT for this run)"
+    APP_PORT="$ENV_PORT"
+  fi
 fi
 
 log "Installing systemd service"
@@ -134,6 +153,7 @@ fi
 
 log "Done."
 echo "  App directory : $APP_DIR"
+echo "  Listening on  : 127.0.0.1:${APP_PORT} (from $ENV_FILE)"
 echo "  Service       : systemctl status stickyprinter"
 echo "  Logs          : journalctl -u stickyprinter -f"
 echo "  Nginx site    : /etc/nginx/sites-available/${DOMAIN}.conf"
